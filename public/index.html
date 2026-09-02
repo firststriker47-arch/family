@@ -1,0 +1,106 @@
+%%writefile public/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family Video Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
+    <div class="max-w-4xl w-full text-center">
+        <h1 class="text-3xl font-bold mb-6 text-emerald-400">Family Video Chat Portal</h1>
+        
+        <div id="setup-container" class="mb-6">
+            <input id="room-input" type="text" placeholder="Enter Family Room Name" class="px-4 py-2 rounded bg-gray-800 border border-gray-700 text-white focus:outline-none focus:border-emerald-500 mr-2">
+            <button onclick="joinRoom()" class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded font-semibold transition">Join Room</button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="relative bg-black rounded-lg overflow-hidden border border-gray-800">
+                <video id="localVideo" autoplay muted playsinline class="w-full h-64 object-cover"></video>
+                <span class="absolute bottom-2 left-2 bg-black/60 px-2 py-1 text-xs rounded">You</span>
+            </div>
+            <div class="relative bg-black rounded-lg overflow-hidden border border-gray-800">
+                <video id="remoteVideo" autoplay playsinline class="w-full h-64 object-cover"></video>
+                <span class="absolute bottom-2 left-2 bg-black/60 px-2 py-1 text-xs rounded">Family Member</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let localStream;
+        let peerConnection;
+        let targetId;
+
+        const servers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        async function startCamera() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = localStream;
+            } catch (error) {
+                console.error('Error accessing media devices.', error);
+                alert('Could not access camera/microphone.');
+            }
+        }
+
+        async function joinRoom() {
+            const roomName = document.getElementById('room-input').value;
+            if (!roomName) return alert('Please enter a room name');
+            await startCamera();
+            socket.emit('join-room', roomName);
+            document.getElementById('setup-container').style.display = 'none';
+        }
+
+        socket.on('user-connected', async (id) => {
+            targetId = id;
+            peerConnection = createPeerConnection(id);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('offer', { target: id, offer: offer });
+        });
+
+        socket.on('offer', async (data) => {
+            targetId = data.sender;
+            peerConnection = createPeerConnection(data.sender);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('answer', { target: data.sender, answer: answer });
+        });
+
+        socket.on('answer', async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        });
+
+        socket.on('ice-candidate', async (data) => {
+            if (data.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        });
+
+        function createPeerConnection(id) {
+            const pc = new RTCPeerConnection(servers);
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { target: id, candidate: event.candidate });
+                }
+            };
+            pc.ontrack = (event) => {
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+            };
+            return pc;
+        }
+    </script>
+</body>
+</html>
